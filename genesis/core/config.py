@@ -45,5 +45,22 @@ class Config:
     # Confidence required before the agent attempts an automatic fix
     AUTO_FIX_CONFIDENCE_THRESHOLD: float = 0.85
 
+    # ── Bayesian selector ─────────────────────────────────────────────────
+    # Set to False to disable Bayesian hints (degrades to vanilla greedy master)
+    BAYESIAN_SELECTOR_ENABLED: bool = os.getenv("BAYESIAN_SELECTOR_ENABLED", "true").lower() == "true"
+
+    # ── Obsidian integration ──────────────────────────────────────────────
+    OBSIDIAN_VAULT_PATH: str = os.getenv("OBSIDIAN_VAULT_PATH", "")
+    OBSIDIAN_GENESIS_FOLDER: str = os.getenv("OBSIDIAN_GENESIS_FOLDER", "Genesis/PostMortems")
+    OBSIDIAN_RUNBOOK_FOLDER: str = os.getenv("OBSIDIAN_RUNBOOK_FOLDER", "Runbooks")
+
+    # ── Watchdog ──────────────────────────────────────────────────────────
+    WATCHDOG_ENABLED: bool = os.getenv("WATCHDOG_ENABLED", "false").lower() == "true"
+    WATCHDOG_INTERVAL_SECONDS: int = int(os.getenv("WATCHDOG_INTERVAL_SECONDS", "300"))  # 5 min default
+    # Billing anomaly threshold (fraction above mean — 0.40 = 40% above)
+    WATCHDOG_BILLING_THRESHOLD: float = float(os.getenv("WATCHDOG_BILLING_THRESHOLD", "0.40"))
+    # Error spike threshold (multiplier above baseline — 3.0 = 3x normal errors)
+    WATCHDOG_ERROR_THRESHOLD: float = float(os.getenv("WATCHDOG_ERROR_THRESHOLD", "3.0"))
+
 
 config = Config()

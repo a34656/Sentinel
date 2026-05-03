@@ -53,3 +53,19 @@ class AgentState(TypedDict):
     # ── Internal routing (not streamed to frontend) ───────────────────────
     _next_worker: str
     _worker_instruction: str
+
+    # ── Three-tier memory context (injected at investigation start) ────────
+    # Layer 3 rules + Layer 2 similar episodes, pre-formatted for Master context.
+    # Flat string, ~1300 tokens regardless of system uptime.
+    memory_context: Optional[str]
+
+    # ── Bayesian investigation state ───────────────────────────────────────
+    # Serialised BeliefState from tools/bayesian_selector.py.
+    # Stored as dict so it survives LangGraph state serialisation.
+    bayesian_beliefs: Optional[dict]         # {cause: probability}
+    bayesian_entropy: float                   # current belief entropy
+    bayesian_top_cause: Optional[str]        # leading hypothesis from Bayesian model
+    bayesian_suggestion: Optional[str]       # formatted hint injected into Master context
+
+    # ── Obsidian context (human corrections + relevant vault notes) ────────
+    obsidian_context: Optional[str]

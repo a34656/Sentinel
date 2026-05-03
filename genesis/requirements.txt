@@ -1,0 +1,63 @@
+# Orchestration
+langgraph==0.2.28
+langchain==0.3.7
+langchain-anthropic==0.2.4
+langchain-core==0.3.15
+
+# LLM
+anthropic==0.36.2
+
+# MCP / Tool integrations
+e2b==1.0.4
+e2b-code-interpreter==1.0.3
+firecrawl-py==1.4.0
+notion-client==2.2.1
+
+# Memory / DB
+supabase==2.9.1
+psycopg2-binary==2.9.10
+
+# AWS
+boto3==1.35.52
+
+# API server
+fastapi==0.115.4
+uvicorn==0.32.0
+python-dotenv==1.0.1
+pydantic==2.9.2
+
+# PDF generation
+reportlab==4.2.5
+
+# Logging
+loguru==0.7.2
+
+# Utilities
+httpx==0.27.2
+tenacity==9.0.0
+
+langchain-google-genai==2.0.5
+google-generativeai==0.8.3
+
+# ── New dependencies added for three-tier memory, watchdog, Bayesian ──────────
+
+# Async scheduling for watchdog loop (used by api/watchdog_routes.py)
+# Note: we use asyncio.create_task directly — no extra package needed.
+# APScheduler is optional if you prefer cron-style scheduling:
+# APScheduler==3.10.4
+
+# Watchdog baseline persistence — stdlib json + pathlib, no extra package needed.
+
+# Obsidian sync — stdlib pathlib + hashlib, no extra package needed.
+
+# Bayesian selector — stdlib math + dataclasses, no extra package needed.
+
+# Consolidation job standalone runner
+# Already covered by existing deps (langchain-google-genai, supabase, loguru)
+
+# Azure Monitor SDK (optional — add if extending analyst.py to multi-cloud)
+# azure-monitor-query==1.4.0
+# azure-identity==1.19.0
+
+# GCP Cloud Logging (optional — add if extending analyst.py to GCP logs)
+# google-cloud-logging==3.11.1

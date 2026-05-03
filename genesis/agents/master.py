@@ -21,8 +21,20 @@ from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
 from core.state import AgentState
 from core.config import config
-# At the top of agents/master.py
 from pathlib import Path
+
+# Bayesian selector — imported lazily so it degrades gracefully if disabled
+_bayesian_selector = None
+
+def _get_bayesian_selector():
+    global _bayesian_selector
+    if _bayesian_selector is None and config.BAYESIAN_SELECTOR_ENABLED:
+        try:
+            from tools.bayesian_selector import BayesianSelector
+            _bayesian_selector = BayesianSelector()
+        except Exception as exc:
+            logger.warning(f"[Master] Bayesian selector unavailable: {exc}")
+    return _bayesian_selector
 
 def _load_prompt(name: str) -> str:
     path = Path(__file__).parent.parent / "prompts" / f"{name}.md"
@@ -78,7 +90,31 @@ def reason(state: AgentState) -> AgentState:
     iteration = state.get("retry_count", 0)
     logger.info(f"[Master] Reasoning. Iteration={iteration} | Confidence={state.get('confidence_score', 0.0):.2f}")
 
-    context = _build_context(state)
+    # Update Bayesian beliefs from the latest script output
+    bayesian_suggestion = state.get("bayesian_suggestion", "")
+    selector = _get_bayesian_selector()
+    if selector and state.get("scripts_executed"):
+        latest = state["scripts_executed"][-1]
+        from tools.bayesian_selector import extract_keywords_from_output
+        keywords = extract_keywords_from_output(
+            latest.get("output", ""),
+            latest.get("stderr", ""),
+        )
+        # Record the last worker's action and update beliefs
+        last_worker = state.get("current_worker", "")
+        if last_worker and last_worker not in ("master", "memory_agent", "scribe"):
+            selector.record_action(last_worker, keywords)
+
+        bayesian_suggestion = selector.suggest()
+        bayesian_beliefs = selector.belief_state.beliefs
+        bayesian_entropy = selector.belief_state.entropy()
+        bayesian_top_cause, _ = selector.belief_state.top_hypothesis()
+    else:
+        bayesian_beliefs = state.get("bayesian_beliefs", {})
+        bayesian_entropy = state.get("bayesian_entropy", 0.0)
+        bayesian_top_cause = state.get("bayesian_top_cause")
+
+    context = _build_context({**state, "bayesian_suggestion": bayesian_suggestion})
 
     response = llm.invoke([
         SystemMessage(content=SYSTEM_PROMPT),
@@ -100,6 +136,10 @@ def reason(state: AgentState) -> AgentState:
         "proposed_fix": parsed.get("proposed_fix"),
         "_next_worker": parsed.get("next_worker", "end"),
         "_worker_instruction": parsed.get("instruction", ""),
+        "bayesian_beliefs": bayesian_beliefs,
+        "bayesian_entropy": bayesian_entropy,
+        "bayesian_top_cause": bayesian_top_cause,
+        "bayesian_suggestion": bayesian_suggestion,
     }
 
 
@@ -155,4 +195,20 @@ def _build_context(state: AgentState) -> str:
         "STEP LOG (most recent 10 steps):",
         "\n".join(state.get("step_log", [])[-10:]),
     ]
+
+    # ── Memory context (Layer 3 rules + Layer 2 episodes) ─────────────────
+    memory_context = state.get("memory_context")
+    if memory_context:
+        parts.insert(4, f"MEMORY CONTEXT:\n{memory_context}")
+
+    # ── Obsidian corrections and vault notes ───────────────────────────────
+    obsidian_context = state.get("obsidian_context")
+    if obsidian_context:
+        parts.insert(5, f"OBSIDIAN VAULT CONTEXT:\n{obsidian_context}")
+
+    # ── Bayesian suggestion ────────────────────────────────────────────────
+    bayesian_suggestion = state.get("bayesian_suggestion")
+    if bayesian_suggestion and config.BAYESIAN_SELECTOR_ENABLED:
+        parts.append(bayesian_suggestion)
+
     return "\n\n".join(parts)

@@ -22,6 +22,7 @@ from loguru import logger
 
 from core.graph import genesis_graph
 from core.state import AgentState
+from core.config import config
 
 
 # ── App setup ─────────────────────────────────────────────────────────────────
@@ -29,7 +30,24 @@ from core.state import AgentState
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Genesis API starting up")
+
+    # Sync Obsidian vault index on startup (non-blocking)
+    try:
+        from tools.obsidian_sync import sync_vault_to_db
+        synced = sync_vault_to_db()
+        if synced:
+            logger.info(f"[Startup] Obsidian: synced {synced} vault notes")
+    except Exception as exc:
+        logger.debug(f"[Startup] Obsidian sync skipped: {exc}")
+
+    # Start watchdog if enabled
+    if config.WATCHDOG_ENABLED:
+        from api.watchdog_routes import start_watchdog_scheduler
+        await start_watchdog_scheduler()
+        logger.info("[Startup] Watchdog scheduler started")
+
     yield
+
     logger.info("Genesis API shutting down")
 
 
@@ -42,6 +60,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount watchdog routes
+from api.watchdog_routes import router as watchdog_router
+app.include_router(watchdog_router)
 
 # Track active runs: incident_id → should_continue (bool)
 active_runs: dict[str, bool] = {}
@@ -96,6 +118,13 @@ async def start_incident(req: IncidentRequest):
         "step_log": [],
         "_next_worker": "",
         "_worker_instruction": "",
+        # Three-tier memory (populated by memory_lookup node)
+        "memory_context": None,
+        "bayesian_beliefs": {},
+        "bayesian_entropy": 0.0,
+        "bayesian_top_cause": None,
+        "bayesian_suggestion": None,
+        "obsidian_context": None,
     }
 
     async def stream():
@@ -120,6 +149,10 @@ async def start_incident(req: IncidentRequest):
                         "fix_blocked_reason":      state_update.get("fix_blocked_reason"),
                         "notion_page_url":         state_update.get("notion_page_url"),
                         "final_report_path":       state_update.get("final_report_path"),
+                        # Bayesian fields — streamed so frontend can show belief state
+                        "bayesian_entropy":        state_update.get("bayesian_entropy", 0.0),
+                        "bayesian_top_cause":      state_update.get("bayesian_top_cause"),
+                        "bayesian_beliefs":        state_update.get("bayesian_beliefs", {}),
                     }
                     yield _sse("step", event)
 

@@ -1,0 +1,60 @@
+# =============================================
+# Project Genesis — Python Backend Dependencies
+# Python 3.11+ required
+# =============================================
+
+# --- Core Agent Orchestration ---
+langchain==0.2.12
+langchain-core==0.2.28
+langchain-community==0.2.11
+langgraph==0.1.19                  # Stateful multi-step agent loops
+langchain-google-vertexai==1.0.10  # Gemini via Vertex AI
+
+# --- LLM SDKs ---
+anthropic==0.32.0                  # Claude Sonnet 4 for post-mortem writing
+google-cloud-aiplatform==1.60.0    # Vertex AI Reasoning Engine
+vertexai==1.60.0
+
+# --- Sandbox Execution ---
+e2b==0.17.2                        # Secure sandboxed Python execution (Partner MCP)
+e2b-code-interpreter==0.0.10
+
+# --- MCP / Tool Integrations ---
+firecrawl-py==0.0.16               # Web crawling for live API docs (Partner MCP)
+notion-client==2.2.1               # Notion MCP for read/write docs
+
+# --- AWS Tools (for billing/CloudWatch demo) ---
+boto3==1.34.155
+botocore==1.34.155
+
+# --- GCP Tools ---
+google-cloud-logging==3.11.0
+google-cloud-monitoring==2.22.0
+
+# --- Memory / Vector Store ---
+supabase==2.6.0
+vecs==0.4.3                        # pgvector interface for Supabase
+
+# --- Database ---
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.32
+alembic==1.13.2
+
+# --- PDF Generation ---
+reportlab==4.2.2
+
+# --- API Server ---
+fastapi==0.112.0
+uvicorn[standard]==0.30.5
+python-multipart==0.0.9
+httpx==0.27.0
+pydantic==2.8.2
+pydantic-settings==2.4.0
+
+# --- Utilities ---
+python-dotenv==1.0.1
+structlog==24.4.0                  # Structured logging
+tenacity==8.5.0                    # Retry logic
+rich==13.7.1                       # Dev console output
+pytest==8.3.2
+pytest-asyncio==0.23.8
