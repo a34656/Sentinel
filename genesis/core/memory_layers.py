@@ -63,7 +63,7 @@ def _embed(text: str) -> list[float]:
     Each dimension = fraction of concept keywords present in text.
     Fast, free, no API call. Sufficient for prototype-level similarity search.
     """
-    text_lower = text.lower()
+    text_lower = str(text).lower()
     scores = []
     for concept in _CONCEPTS:
         keywords = concept.split()
@@ -165,7 +165,18 @@ def query_layer2(prompt: str, top_k: int = 3) -> list[dict]:
             "match_count": top_k,
         }).execute()
 
-        return result.data or []
+        return [
+            {
+                "incident_id":      row.get("incident_id"),
+                "incident_prompt":  row.get("incident_prompt"),
+                "root_cause":       row.get("root_cause"),
+                "resolution":       row.get("resolution"),
+                "confidence_score": float(row.get("confidence_score") or 0),
+                "similarity":       float(row.get("similarity") or 0),
+                "decay_score":      float(row.get("decay_score") or 1.0),
+            }
+            for row in (result.data or [])
+        ]
 
     except Exception as exc:
         logger.warning(f"[MemoryLayers] Layer2 query failed: {exc}")
@@ -282,8 +293,8 @@ def inject_memory_context(incident_prompt: str) -> str:
     if layer2_matches:
         parts.append("\nSIMILAR PAST INCIDENTS (ranked by relevance × recency):")
         for m in layer2_matches:
-            similarity_pct = round(m.get("similarity", 0) * 100)
-            decay_pct = round(m.get("decay_score", 1.0) * 100)
+            similarity_pct = round(float(m.get("similarity" or 0)) * 100)
+            decay_pct = round(float(m.get("decay_score" or 1.0)) * 100)
             parts.append(
                 f"• [{similarity_pct}% similar, {decay_pct}% fresh] "
                 f"{m.get('incident_prompt', '')[:100]}\n"

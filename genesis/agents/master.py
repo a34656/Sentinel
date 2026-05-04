@@ -100,7 +100,6 @@ def reason(state: AgentState) -> AgentState:
             latest.get("output", ""),
             latest.get("stderr", ""),
         )
-        # Record the last worker's action and update beliefs
         last_worker = state.get("current_worker", "")
         if last_worker and last_worker not in ("master", "memory_agent", "scribe"):
             selector.record_action(last_worker, keywords)
@@ -116,12 +115,48 @@ def reason(state: AgentState) -> AgentState:
 
     context = _build_context({**state, "bayesian_suggestion": bayesian_suggestion})
 
-    response = llm.invoke([
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=context),
-    ])
+    # ── LLM call with JSON retry loop ─────────────────────────────────────
+    parsed = None
+    last_raw = ""
+    for attempt in range(3):
+        try:
+            messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=context)]
 
-    parsed = _parse_response(response.content)
+            # On retry: add stricter JSON reminder
+            if attempt > 0:
+                messages.append(HumanMessage(content=(
+                    f"Your previous response could not be parsed as JSON.\n"
+                    f"Previous response was:\n{last_raw[:500]}\n\n"
+                    "You MUST respond with ONLY a valid JSON object. "
+                    "No prose, no markdown fences, no explanation outside the JSON. "
+                    "Start your response with { and end with }."
+                )))
+
+            response = llm.invoke(messages)
+            last_raw = response.content
+            parsed = _parse_response(last_raw)
+
+            if parsed.get("reasoning") != "JSON parse failure":
+                break  # successfully parsed
+
+            logger.warning(f"[Master] JSON parse failed on attempt {attempt + 1}/3")
+
+        except Exception as exc:
+            logger.error(f"[Master] LLM call failed on attempt {attempt + 1}: {exc}")
+
+    # If all retries failed, synthesise a safe completion from current state
+    if parsed is None or parsed.get("reasoning") == "JSON parse failure":
+        logger.error("[Master] All JSON parse attempts failed — synthesising completion from current state")
+        current_confidence = state.get("confidence_score", 0.0)
+        parsed = {
+            "next_worker": "report_generator" if current_confidence >= 0.4 else "end",
+            "reasoning": "JSON parse failure after 3 retries — completing with current state",
+            "confidence_score": current_confidence,
+            "root_cause": state.get("root_cause") or "Could not be determined due to response format error",
+            "corroborating_signals": state.get("corroborating_signals", []),
+            "proposed_fix": state.get("proposed_fix"),
+            "instruction": "",
+        }
 
     log_entry = f"[Master] {parsed.get('reasoning', 'No reasoning provided')[:300]}"
     logger.info(log_entry)
@@ -130,10 +165,10 @@ def reason(state: AgentState) -> AgentState:
         **state,
         "current_worker": "master",
         "step_log": [log_entry],
-        "root_cause": parsed.get("root_cause"),
-        "confidence_score": float(parsed.get("confidence_score", 0.0)),
-        "corroborating_signals": parsed.get("corroborating_signals", []),
-        "proposed_fix": parsed.get("proposed_fix"),
+        "root_cause": parsed.get("root_cause") or state.get("root_cause"),
+        "confidence_score": float(parsed.get("confidence_score", state.get("confidence_score", 0.0))),
+        "corroborating_signals": parsed.get("corroborating_signals", state.get("corroborating_signals", [])),
+        "proposed_fix": parsed.get("proposed_fix") or state.get("proposed_fix"),
         "_next_worker": parsed.get("next_worker", "end"),
         "_worker_instruction": parsed.get("instruction", ""),
         "bayesian_beliefs": bayesian_beliefs,

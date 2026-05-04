@@ -86,24 +86,51 @@ def _run_in_sandbox(script: str) -> dict:
 def _extract_script(instruction: str) -> str:
     """
     Pull Python code out of the Master's instruction.
-    Handles:
-    - ```python\\n...``` fenced blocks
-    - ``` ... ``` plain fenced blocks
-    - Raw Python (no fences)
+    Handles multiple formats the LLM might produce.
     """
-    # Prefer explicit python fence
+    # 1. Explicit ```python fence (most common)
     match = re.search(r'```python\s*\n(.*?)```', instruction, re.DOTALL)
     if match:
         return match.group(1).strip()
 
-    # Fall back to any fenced block
+    # 2. Any ``` fence
     match = re.search(r'```\s*\n(.*?)```', instruction, re.DOTALL)
     if match:
         return match.group(1).strip()
 
-    # Treat the whole instruction as a script if it looks like Python
+    # 3. Inline ``` without newline after opening fence
+    match = re.search(r'```python(.*?)```', instruction, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+
+    match = re.search(r'```(.*?)```', instruction, re.DOTALL)
+    if match:
+        candidate = match.group(1).strip()
+        if len(candidate) > 10:
+            return candidate
+
+    # 4. Starts with common Python patterns
     stripped = instruction.strip()
-    if stripped.startswith(("import ", "from ", "def ", "#", "boto3", "print")):
+    python_starters = (
+        "import ", "from ", "def ", "class ", "#", "print(",
+        "with ", "try:", "for ", "while ", "if ",
+        "open(", "boto3", "os.", "json.", "requests.",
+    )
+    if stripped.startswith(python_starters):
         return stripped
+
+    # 5. Contains Python keywords strongly suggesting it IS a script
+    # even if the LLM forgot to wrap it in fences
+    python_signals = ["import ", "def ", "print(", "open(", "with open", "os.path"]
+    lines = stripped.split("\n")
+    if any(any(sig in line for sig in python_signals) for line in lines):
+        # Filter out obvious prose lines (long sentences ending in punctuation)
+        code_lines = [
+            l for l in lines
+            if not (len(l) > 120 and l.rstrip().endswith((".","!","?")))
+        ]
+        candidate = "\n".join(code_lines).strip()
+        if candidate:
+            return candidate
 
     return ""

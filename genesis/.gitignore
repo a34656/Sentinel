@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+dev/
 *.egg-info/
 dist/
 build/
@@ -36,3 +37,5 @@ logs/
 
 # Generated reports
 reports/*.pdf
+
+tests/

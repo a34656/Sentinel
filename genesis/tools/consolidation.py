@@ -117,7 +117,7 @@ def _extract_rules_from_episodes(episodes: list[dict]) -> list[dict]:
         from langchain_core.messages import SystemMessage, HumanMessage
 
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-lite",    # cheap model — this is a background job
+            model="gemini-2.5-flash-lite",    # cheap model — this is a background job
             google_api_key=config.GEMINI_API_KEY,
             temperature=0.2,
         )

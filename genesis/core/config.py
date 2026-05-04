@@ -26,6 +26,13 @@ class Config:
     # ── AWS ───────────────────────────────────────────────────────────────
     AWS_REGION: str = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
 
+    PRIMARY_CLOUD: str = os.getenv("PRIMARY_CLOUD", "aws")
+
+    # GCP
+    GCP_PROJECT_ID: str = os.getenv("GCP_PROJECT_ID", "")
+    GCP_REGION: str = os.getenv("GCP_REGION", "us-central1")
+    GCP_SERVICE_ACCOUNT_PATH: str = os.getenv("GCP_SERVICE_ACCOUNT_PATH", "")
+
     # ── Safety policy ─────────────────────────────────────────────────────
     # Any proposed fix containing these strings is blocked for human approval
     BLOCKED_ACTIONS: list[str] = [

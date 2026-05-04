@@ -230,7 +230,7 @@ def run_tier2_classification(alerts: list[WatchdogAlert]) -> Optional[str]:
         from langchain_core.messages import SystemMessage, HumanMessage
 
         classifier = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-lite",
+            model="gemini-2.5-flash-lite",
             google_api_key=config.GEMINI_API_KEY,
             temperature=0,
         )
