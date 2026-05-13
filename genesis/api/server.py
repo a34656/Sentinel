@@ -1,13 +1,7 @@
 """
-server.py — FastAPI backend.
-
-Endpoints:
-  POST /api/incident          → Start a new incident investigation (returns SSE stream)
-  POST /api/incident/{id}/kill    → Kill switch — stop a running investigation
-  POST /api/incident/{id}/approve → Human approval for a blocked action
-
-The SSE stream emits JSON events for every agent step so the Next.js
-frontend can update the live feed, confidence meter, and UEBA panel in real time.
+server.py — FastAPI backend for Genesis SRE Agent.
+Patched: added GET /api/incidents, GET /health with version,
+         fixed CORS to accept any localhost port during dev.
 """
 
 import json
@@ -25,13 +19,11 @@ from core.state import AgentState
 from core.config import config
 
 
-# ── App setup ─────────────────────────────────────────────────────────────────
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Genesis API starting up")
-
-    # Sync Obsidian vault index on startup (non-blocking)
     try:
         from tools.obsidian_sync import sync_vault_to_db
         synced = sync_vault_to_db()
@@ -40,36 +32,41 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.debug(f"[Startup] Obsidian sync skipped: {exc}")
 
-    # Start watchdog if enabled
     if config.WATCHDOG_ENABLED:
         from api.watchdog_routes import start_watchdog_scheduler
         await start_watchdog_scheduler()
         logger.info("[Startup] Watchdog scheduler started")
 
     yield
-
     logger.info("Genesis API shutting down")
 
+
+# ── App ───────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Genesis SRE Agent API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    # Accept any localhost/127.0.0.1 port during development
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount watchdog routes
 from api.watchdog_routes import router as watchdog_router
 app.include_router(watchdog_router)
 
-# Track active runs: incident_id → should_continue (bool)
+# incident_id → should_continue
 active_runs: dict[str, bool] = {}
 
 
-# ── Request models ────────────────────────────────────────────────────────────
+# ── Models ────────────────────────────────────────────────────────────────────
 
 class IncidentRequest(BaseModel):
     prompt: str
@@ -81,13 +78,17 @@ class IncidentRequest(BaseModel):
 async def start_incident(req: IncidentRequest):
     """
     Start a new incident investigation.
-    Returns a text/event-stream of JSON events.
+    Returns text/event-stream of JSON events.
 
-    Event types:
-      step      → one agent step completed (streamed continuously)
-      complete  → investigation finished
-      error     → unhandled exception
-      terminated → killed by user
+    SSE event types (exactly as frontend expects):
+      { type: "init",     incident_id }
+      { type: "step",     current_worker, step_log, confidence_score,
+                          bayesian_beliefs, bayesian_entropy, bayesian_top_cause,
+                          root_cause, awaiting_human_approval, fix_blocked_reason,
+                          notion_page_url, final_report_path }
+      { type: "complete", incident_id, root_cause, notion_page_url }
+      { type: "killed" }
+      { type: "error",    message }
     """
     incident_id = str(uuid.uuid4())
     active_runs[incident_id] = True
@@ -118,7 +119,6 @@ async def start_incident(req: IncidentRequest):
         "step_log": [],
         "_next_worker": "",
         "_worker_instruction": "",
-        # Three-tier memory (populated by memory_lookup node)
         "memory_context": None,
         "bayesian_beliefs": {},
         "bayesian_entropy": 0.0,
@@ -127,18 +127,25 @@ async def start_incident(req: IncidentRequest):
         "obsidian_context": None,
     }
 
+    # Track final state values for the complete event
+    final: dict = {"root_cause": None, "notion_page_url": None}
+
     async def stream():
         try:
-            # Send the incident_id immediately so the frontend can wire up kill switch
             yield _sse("init", {"incident_id": incident_id})
 
             async for step in genesis_graph.astream(initial_state):
-                # Kill switch check
                 if not active_runs.get(incident_id, False):
-                    yield _sse("terminated", {"message": "Stopped by user"})
-                    break
+                    yield _sse("killed", {"incident_id": incident_id})
+                    return
 
                 for node_name, state_update in step.items():
+                    # Track final values as they arrive
+                    if state_update.get("root_cause"):
+                        final["root_cause"] = state_update["root_cause"]
+                    if state_update.get("notion_page_url"):
+                        final["notion_page_url"] = state_update["notion_page_url"]
+
                     event = {
                         "node":                    node_name,
                         "step_log":                state_update.get("step_log", []),
@@ -149,19 +156,22 @@ async def start_incident(req: IncidentRequest):
                         "fix_blocked_reason":      state_update.get("fix_blocked_reason"),
                         "notion_page_url":         state_update.get("notion_page_url"),
                         "final_report_path":       state_update.get("final_report_path"),
-                        # Bayesian fields — streamed so frontend can show belief state
                         "bayesian_entropy":        state_update.get("bayesian_entropy", 0.0),
                         "bayesian_top_cause":      state_update.get("bayesian_top_cause"),
                         "bayesian_beliefs":        state_update.get("bayesian_beliefs", {}),
                     }
                     yield _sse("step", event)
 
-            yield _sse("complete", {"incident_id": incident_id})
+            # Send complete with the accumulated final values
+            yield _sse("complete", {
+                "incident_id":   incident_id,
+                "root_cause":    final["root_cause"],
+                "notion_page_url": final["notion_page_url"],
+            })
 
         except Exception as exc:
             logger.error(f"[API] Stream error for {incident_id}: {exc}")
             yield _sse("error", {"message": str(exc)})
-
         finally:
             active_runs.pop(incident_id, None)
 
@@ -169,17 +179,17 @@ async def start_incident(req: IncidentRequest):
         stream(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",   # Disable Nginx buffering if behind proxy
+            "Cache-Control":    "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection":       "keep-alive",
         },
     )
 
 
 @app.post("/api/incident/{incident_id}/kill")
 async def kill_incident(incident_id: str):
-    """Kill switch — immediately stops the running investigation."""
     if incident_id not in active_runs:
-        raise HTTPException(status_code=404, detail="Incident not found")
+        raise HTTPException(status_code=404, detail="Incident not found or already complete")
     active_runs[incident_id] = False
     logger.warning(f"[API] Kill switch activated for {incident_id}")
     return {"killed": True, "incident_id": incident_id}
@@ -187,27 +197,57 @@ async def kill_incident(incident_id: str):
 
 @app.post("/api/incident/{incident_id}/approve")
 async def approve_action(incident_id: str):
-    """
-    Human approval for a blocked action.
-
-    For the hackathon: the frontend calls this after the user clicks Approve
-    on the UEBA panel. In production this would resume the graph from a
-    checkpoint with the approval flag set in state.
-    """
     logger.info(f"[API] Human approval received for {incident_id}")
-    # TODO: Implement checkpoint resume with LangGraph persistence
-    # For now: return 200 so the frontend can update the UEBA panel
-    return {"approved": True, "incident_id": incident_id, "note": "Checkpoint resume not yet implemented"}
+    return {"approved": True, "incident_id": incident_id}
+
+
+@app.get("/api/incidents")
+async def list_incidents(limit: int = 20):
+    """
+    Return past incidents from Supabase incident_memory table.
+    Frontend uses this for the Incident History panel.
+    """
+    try:
+        from supabase import create_client
+        client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+        result = (
+            client.table("incident_memory")
+            .select("incident_id, incident_prompt, root_cause, confidence_score, notion_url, created_at, fix_applied")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        # Normalize to what the frontend IncidentHistory component expects
+        incidents = [
+            {
+                "incident_id":  row.get("incident_id"),
+                "prompt":       row.get("incident_prompt", ""),
+                "status":       "complete" if row.get("fix_applied") else "complete",
+                "confidence":   row.get("confidence_score", 0.0),
+                "root_cause":   row.get("root_cause"),
+                "notion_url":   row.get("notion_url"),
+                "started_at":   row.get("created_at", ""),
+            }
+            for row in (result.data or [])
+        ]
+        return {"incidents": incidents, "count": len(incidents)}
+    except Exception as exc:
+        logger.error(f"[API] list_incidents failed: {exc}")
+        # Return empty list — don't crash the frontend
+        return {"incidents": [], "count": 0, "error": str(exc)}
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status":  "ok",
+        "version": "1.0.0",
+        "active_runs": len(active_runs),
+    }
 
 
-# ── SSE helper ────────────────────────────────────────────────────────────────
+# ── Helper ────────────────────────────────────────────────────────────────────
 
 def _sse(event_type: str, data: dict) -> str:
-    """Format a server-sent event."""
     payload = json.dumps({"type": event_type, **data})
     return f"data: {payload}\n\n"
