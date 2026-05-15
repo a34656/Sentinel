@@ -37,5 +37,7 @@ logs/
 
 # Generated reports
 reports/*.pdf
+Genesis/PostMortems/*.md
+data
 
 tests/

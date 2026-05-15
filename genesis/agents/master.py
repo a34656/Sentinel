@@ -42,7 +42,7 @@ def _load_prompt(name: str) -> str:
 
 SYSTEM_PROMPT = _load_prompt("master")
 
-
+    
 # ── LLM client ───────────────────────────────────────────────────────────────
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash-lite",
@@ -58,25 +58,41 @@ YOUR ROLE:
 - Produce a structured post-mortem when the investigation is complete
 
 WORKERS YOU CAN CALL:
-- scout      → crawl documentation, API references, or release notes (provide a URL or search query)
+- scout      → scrape a SPECIFIC URL only (e.g. https://docs.mongodb.com/...). CANNOT do keyword searches.
 - engineer   → write and execute a Python script in a secure E2B sandbox
 - analyst    → pull structured data from AWS Cost Explorer or GCP Cloud Logging
 - policy_guard → check whether a proposed fix is safe to auto-execute
 - report     → generate the final PDF post-mortem (call this when confidence >= 0.85 and fix is done or blocked)
 - end        → terminate immediately (only if something is catastrophically wrong)
 
+CRITICAL CONSTRAINTS:
+- MONGODB: The MONGODB_URI and MONGODB_DB environment variables are ALREADY INJECTED into every engineer sandbox. Do NOT call scout to find connection strings or MongoDB docs — just write the Python script directly using pymongo.
+- SCOUT LIMITATION: Scout can only scrape explicit URLs, NOT perform web searches. Never call scout with a search query like "how to connect to MongoDB" — it will fail. Only call scout if you have a direct documentation URL.
+- If an engineer script fails due to a connection error, try a different query approach or reduce scope — do NOT call scout for help.
+
 DECISION RULES:
-1. Always check prior incidents and runbooks before writing new scripts
+1. For database investigations, go directly to engineer — all credentials are pre-configured
 2. Increase confidence only when multiple independent signals agree
 3. Never propose a destructive action without routing through policy_guard first
 4. Once confidence >= 0.85 and the fix is either applied or blocked, call report
-5. If retry_count >= 3, lower ambition — simplify the script or change approach
+5. If retry_count >= 3, call report immediately with whatever evidence you have
+
+ENGINEER INSTRUCTION RULE — THIS IS CRITICAL:
+When next_worker is "engineer", the "instruction" field MUST contain the ACTUAL PYTHON CODE wrapped in a ```python fence.
+DO NOT write prose like "Write a script to query...". The engineer cannot write code itself — it only executes what you provide.
+If there is no ```python ... ``` block in the instruction, NOTHING will run and you will waste an iteration.
+
+CORRECT example:
+  "instruction": "```python\nfrom pymongo import MongoClient\nimport os\nclient = MongoClient(os.getenv('MONGODB_URI'))\ndb = client[os.getenv('MONGODB_DB', 'genesis_compliance')]\nresult = list(db.transactions.find({'status': 'approved'}).limit(5))\nfor r in result:\n    print(r)\n```"
+
+WRONG example (will fail):
+  "instruction": "Query the transactions collection for approved records"
 
 RESPONSE FORMAT — always respond with valid JSON only, no prose outside the JSON:
 {
   "reasoning": "step-by-step thinking about what the evidence shows",
   "next_worker": "scout|engineer|analyst|policy_guard|report|end",
-  "instruction": "precise instruction for the chosen worker",
+  "instruction": "MUST contain actual ```python\n...\n``` code block when next_worker is engineer",
   "root_cause": "current best hypothesis as a single sentence, or null",
   "confidence_score": 0.0,
   "corroborating_signals": ["signal 1", "signal 2"],
@@ -90,8 +106,80 @@ def reason(state: AgentState) -> AgentState:
     iteration = state.get("retry_count", 0)
     logger.info(f"[Master] Reasoning. Iteration={iteration} | Confidence={state.get('confidence_score', 0.0):.2f}")
 
-    # Update Bayesian beliefs from the latest script output
+    # ── Hard-stop guard: too many failed retries → go straight to report/end ──
+    if iteration >= config.MAX_SCRIPT_RETRIES:
+        current_confidence = state.get("confidence_score", 0.0)
+        next_worker = "report" if current_confidence >= 0.3 else "end"
+        msg = (
+            f"[Master] Retry limit ({config.MAX_SCRIPT_RETRIES}) reached — "
+            f"routing to '{next_worker}' with confidence {current_confidence:.2f}"
+        )
+        logger.warning(msg)
+        return {
+            **state,
+            "current_worker": "master",
+            "step_log": [msg],
+            "_next_worker": next_worker,
+            "_worker_instruction": "Generate final report based on evidence collected so far.",
+        }
+
+
+    # ── Schema-first guard: always inspect the DB before writing investigation scripts ──
+    # This makes the agent work correctly against ANY database — it never guesses field names.
+    scripts_executed = state.get("scripts_executed", [])
+    db_keywords = [
+        "database", "mongodb", "mongo", "collection", "transactions",
+        "compliance", "audit", "employees", "customers", "approval",
+        "sql", "postgres", "mysql", "dynamo",
+    ]
+    is_db_incident = any(
+        word in state.get("incident_prompt", "").lower()
+        for word in db_keywords
+    )
+    if len(scripts_executed) == 0 and is_db_incident:
+        schema_script = '''```python
+import os, sys
+from pymongo import MongoClient
+
+MONGODB_URI = os.getenv("MONGODB_URI")
+MONGODB_DB  = os.getenv("MONGODB_DB", "genesis_compliance")
+
+try:
+    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=8000)
+    client.admin.command("ping")
+    db = client[MONGODB_DB]
+    print("Connected:", MONGODB_DB)
+except Exception as e:
+    print("CONNECTION FAILED:", e)
+    sys.exit(1)
+
+print("\\n=== SCHEMA INSPECTION ===")
+for name in sorted(db.list_collection_names()):
+    count = db[name].count_documents({})
+    sample = list(db[name].find().limit(1))
+    fields = list(sample[0].keys()) if sample else []
+    # Remove internal _id for clarity
+    fields = [f for f in fields if f != "_id"]
+    print(f"\\nCOLLECTION: {name}")
+    print(f"  documents : {count}")
+    print(f"  fields    : {fields}")
+    if sample:
+        # Print a sanitised sample row so the master sees real values
+        row = {k: v for k, v in sample[0].items() if k != "_id"}
+        print(f"  sample    : {row}")
+```'''
+        msg = "[Master] 🔍 Database incident detected — running schema inspection before any investigation"
+        logger.info(msg)
+        return {
+            **state,
+            "current_worker": "master",
+            "step_log": [msg],
+            "_next_worker": "engineer",
+            "_worker_instruction": schema_script,
+        }
+
     bayesian_suggestion = state.get("bayesian_suggestion", "")
+
     selector = _get_bayesian_selector()
     if selector and state.get("scripts_executed"):
         latest = state["scripts_executed"][-1]
@@ -230,6 +318,14 @@ def _build_context(state: AgentState) -> str:
         "STEP LOG (most recent 10 steps):",
         "\n".join(state.get("step_log", [])[-10:]),
     ]
+
+    # ── Schema context (pinned at top — must be read before any query is written) ──
+    schema_context = state.get("schema_context")
+    if schema_context:
+        parts.insert(0, (
+            "DATABASE SCHEMA (discovered at investigation start — USE THESE EXACT FIELD NAMES):\n"
+            + schema_context
+        ))
 
     # ── Memory context (Layer 3 rules + Layer 2 episodes) ─────────────────
     memory_context = state.get("memory_context")

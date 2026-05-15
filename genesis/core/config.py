@@ -46,7 +46,7 @@ class Config:
     ]
 
     # ── Retry / iteration limits ──────────────────────────────────────────
-    MAX_SCRIPT_RETRIES: int = 3
+    MAX_SCRIPT_RETRIES: int = 5
     MAX_AGENT_ITERATIONS: int = 20
 
     # Confidence required before the agent attempts an automatic fix

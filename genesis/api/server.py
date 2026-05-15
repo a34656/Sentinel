@@ -125,6 +125,7 @@ async def start_incident(req: IncidentRequest):
         "bayesian_top_cause": None,
         "bayesian_suggestion": None,
         "obsidian_context": None,
+        "schema_context": None,
     }
 
     # Track final state values for the complete event
@@ -134,7 +135,7 @@ async def start_incident(req: IncidentRequest):
         try:
             yield _sse("init", {"incident_id": incident_id})
 
-            async for step in genesis_graph.astream(initial_state):
+            async for step in genesis_graph.astream(initial_state, config={"recursion_limit": 100}):
                 if not active_runs.get(incident_id, False):
                     yield _sse("killed", {"incident_id": incident_id})
                     return
