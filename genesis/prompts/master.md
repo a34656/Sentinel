@@ -105,6 +105,7 @@ These are **reference patterns** — adapt the field names to match what DATABAS
 shows you. Do not copy them verbatim if the field names differ.
 
 **Finding 1 — Missing approvals**
+
 ```python
 # Replace 'approved_by' with the actual approval field name from schema
 f1 = db["transactions"].count_documents({"approved_by": None})
@@ -114,6 +115,7 @@ print(f"EVIDENCE: {[s['txn_id'] for s in samples]}")
 ```
 
 **Finding 2 — Ghost approvers (approved by non-existent employee)**
+
 ```python
 # Replace 'emp_id' and 'approved_by' with actual field names from schema
 valid_ids = [e["emp_id"] for e in db["employees"].find({}, {"emp_id": 1})]
@@ -125,6 +127,7 @@ print(f"EVIDENCE: ghost IDs = {ghost_ids[:5]}")
 ```
 
 **Finding 3 — Inactive approvers**
+
 ```python
 # Replace 'active' with the actual status field name from schema
 inactive = [e["emp_id"] for e in db["employees"].find({"active": False}, {"emp_id": 1})]
@@ -134,6 +137,7 @@ print(f"EVIDENCE: inactive IDs = {inactive[:5]}")
 ```
 
 **Finding 4 — Role violations (high-risk customer approved by junior role)**
+
 ```python
 # Replace 'risk_level', 'customer_id', 'role' with actual field names from schema
 high_risk = [c["customer_id"] for c in db["customers"].find({"risk_level": "high"}, {"customer_id": 1})]
@@ -146,6 +150,7 @@ print(f"FINDING 4: {f4} high-risk transactions approved by analysts")
 ```
 
 **Finding 5 — Missing audit trail**
+
 ```python
 # Replace 'txn_id' and 'status' with actual field names from schema
 approved_ids = db["transactions"].distinct("txn_id", {"status": "approved"})
@@ -222,6 +227,40 @@ Always respond with **valid JSON only**. No prose before or after the JSON block
   "proposed_fix": "Exact description of the fix to apply, or null"
 }
 ```
+
+## MongoDB Compliance Investigation Rules
+
+When investigating MongoDB compliance, you MUST check all 5 findings:
+
+1. **Missing approvals** — transactions where approved_by is null
+2. **Ghost approvers** — approved_by values not in employees collection
+3. **Inactive approvers** — approved by employees where active = False
+4. **Role violations** — high-risk customers approved by analysts
+   - Join: transactions.customer_id → customers (risk_level = "high")
+   - Then: transactions.approved_by → employees (role = "analyst")
+   - CRITICAL: Use customer_id to join transactions and customers
+   - CRITICAL: Use emp_id (not employee_id) for employee lookups
+5. **Missing audit trail** — approved transactions with no approval_log entry
+
+For Finding 4, always use this exact logic:
+
+```python
+high_risk = [c["customer_id"] for c in db["customers"].find({"risk_level": "high"}, {"customer_id":1})]
+analysts  = [e["emp_id"] for e in db["employees"].find({"role": "analyst"}, {"emp_id":1})]
+f4 = db["transactions"].count_documents({
+    "customer_id": {"$in": high_risk},
+    "approved_by": {"$in": analysts}
+})
+print(f"FINDING 4: {f4}")
+```
+
+Field name reference — use these exactly, no variations:
+
+- Employee ID: emp_id
+- Customer ID: customer_id  
+- Junior staff filter: role = "analyst"
+- Inactive staff filter: active = False
+- Transaction approver: approved_by
 
 ---
 

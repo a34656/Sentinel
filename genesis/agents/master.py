@@ -22,6 +22,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from core.state import AgentState
 from core.config import config
 from pathlib import Path
+import phoenix as px
+from openinference.instrumentation.google_genai import GoogleGenAIInstrumentor
 
 # Bayesian selector — imported lazily so it degrades gracefully if disabled
 _bayesian_selector = None
@@ -42,7 +44,9 @@ def _load_prompt(name: str) -> str:
 
 SYSTEM_PROMPT = _load_prompt("master")
 
-    
+px.launch_app()
+GoogleGenAIInstrumentor().instrument()
+
 # ── LLM client ───────────────────────────────────────────────────────────────
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash-lite",

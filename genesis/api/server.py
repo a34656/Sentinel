@@ -60,7 +60,9 @@ app.add_middleware(
 )
 
 from api.watchdog_routes import router as watchdog_router
+from api.planner_routes import router as planner_router
 app.include_router(watchdog_router)
+app.include_router(planner_router)
 
 # incident_id → should_continue
 active_runs: dict[str, bool] = {}
@@ -135,7 +137,7 @@ async def start_incident(req: IncidentRequest):
         try:
             yield _sse("init", {"incident_id": incident_id})
 
-            async for step in genesis_graph.astream(initial_state, config={"recursion_limit": 100}):
+            async for step in genesis_graph.astream(initial_state, config={"recursion_limit": 100}, stream_mode="updates"):
                 if not active_runs.get(incident_id, False):
                     yield _sse("killed", {"incident_id": incident_id})
                     return
@@ -180,10 +182,10 @@ async def start_incident(req: IncidentRequest):
         stream(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control":    "no-cache",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-            "Connection":       "keep-alive",
-        },
+        }
     )
 
 
