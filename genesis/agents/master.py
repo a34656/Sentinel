@@ -14,7 +14,6 @@ The master NEVER executes anything directly. It only reasons and delegates.
 import json
 import re
 import os
-
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage, HumanMessage
 from loguru import logger
@@ -22,8 +21,25 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from core.state import AgentState
 from core.config import config
 from pathlib import Path
-import phoenix as px
-from openinference.instrumentation.google_genai import GoogleGenAIInstrumentor
+
+# ── Arize AX tracing — must be initialised BEFORE any google.genai import ────
+from arize.otel import register
+# from openinference.instrumentation.google_genai import GoogleGenAIInstrumentor
+from openinference.instrumentation.langchain import LangChainInstrumentor
+
+
+tracer_provider = register(
+    space_id=os.environ["ARIZE_SPACE_ID"],
+    api_key=os.environ["ARIZE_API_KEY"],
+    project_name=os.environ.get("ARIZE_PROJECT_NAME", "genesis-compliance"),
+    endpoint="https://otlp.eu-west-1a.arize.com",
+)
+# GoogleGenAIInstrumentor().instrument(tracer_provider=tracer_provider)
+LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+logger.info("[Arize] Tracing initialised — project: genesis-compliance")
 
 # Bayesian selector — imported lazily so it degrades gracefully if disabled
 _bayesian_selector = None
@@ -42,17 +58,13 @@ def _load_prompt(name: str) -> str:
     path = Path(__file__).parent.parent / "prompts" / f"{name}.md"
     return path.read_text(encoding="utf-8")
 
-SYSTEM_PROMPT = _load_prompt("master")
-
-px.launch_app()
-GoogleGenAIInstrumentor().instrument()
-
 # ── LLM client ───────────────────────────────────────────────────────────────
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash-lite",
     google_api_key=config.GEMINI_API_KEY,
     temperature=0,
 )
+
 SYSTEM_PROMPT = """You are Genesis Orchestrator, an autonomous SRE incident response agent.
 
 YOUR ROLE:
@@ -96,7 +108,7 @@ RESPONSE FORMAT — always respond with valid JSON only, no prose outside the JS
 {
   "reasoning": "step-by-step thinking about what the evidence shows",
   "next_worker": "scout|engineer|analyst|policy_guard|report|end",
-  "instruction": "MUST contain actual ```python\n...\n``` code block when next_worker is engineer",
+  "instruction": "MUST contain actual ```python\\n...\\n``` code block when next_worker is engineer",
   "root_cause": "current best hypothesis as a single sentence, or null",
   "confidence_score": 0.0,
   "corroborating_signals": ["signal 1", "signal 2"],
@@ -127,9 +139,7 @@ def reason(state: AgentState) -> AgentState:
             "_worker_instruction": "Generate final report based on evidence collected so far.",
         }
 
-
     # ── Schema-first guard: always inspect the DB before writing investigation scripts ──
-    # This makes the agent work correctly against ANY database — it never guesses field names.
     scripts_executed = state.get("scripts_executed", [])
     db_keywords = [
         "database", "mongodb", "mongo", "collection", "transactions",
@@ -162,13 +172,11 @@ for name in sorted(db.list_collection_names()):
     count = db[name].count_documents({})
     sample = list(db[name].find().limit(1))
     fields = list(sample[0].keys()) if sample else []
-    # Remove internal _id for clarity
     fields = [f for f in fields if f != "_id"]
     print(f"\\nCOLLECTION: {name}")
     print(f"  documents : {count}")
     print(f"  fields    : {fields}")
     if sample:
-        # Print a sanitised sample row so the master sees real values
         row = {k: v for k, v in sample[0].items() if k != "_id"}
         print(f"  sample    : {row}")
 ```'''
@@ -214,7 +222,6 @@ for name in sorted(db.list_collection_names()):
         try:
             messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=context)]
 
-            # On retry: add stricter JSON reminder
             if attempt > 0:
                 messages.append(HumanMessage(content=(
                     f"Your previous response could not be parsed as JSON.\n"
@@ -229,14 +236,13 @@ for name in sorted(db.list_collection_names()):
             parsed = _parse_response(last_raw)
 
             if parsed.get("reasoning") != "JSON parse failure":
-                break  # successfully parsed
+                break
 
             logger.warning(f"[Master] JSON parse failed on attempt {attempt + 1}/3")
 
         except Exception as exc:
             logger.error(f"[Master] LLM call failed on attempt {attempt + 1}: {exc}")
 
-    # If all retries failed, synthesise a safe completion from current state
     if parsed is None or parsed.get("reasoning") == "JSON parse failure":
         logger.error("[Master] All JSON parse attempts failed — synthesising completion from current state")
         current_confidence = state.get("confidence_score", 0.0)
@@ -253,6 +259,11 @@ for name in sorted(db.list_collection_names()):
     log_entry = f"[Master] {parsed.get('reasoning', 'No reasoning provided')[:300]}"
     logger.info(log_entry)
 
+    try:
+        tracer_provider.force_flush()
+    except Exception:
+        pass
+    
     return {
         **state,
         "current_worker": "master",
@@ -284,7 +295,6 @@ def _parse_response(content: str) -> dict:
     try:
         return json.loads(content)
     except json.JSONDecodeError:
-        # Model may have wrapped JSON in ```json ... ```
         match = re.search(r'\{.*\}', content, re.DOTALL)
         if match:
             try:
@@ -323,7 +333,6 @@ def _build_context(state: AgentState) -> str:
         "\n".join(state.get("step_log", [])[-10:]),
     ]
 
-    # ── Schema context (pinned at top — must be read before any query is written) ──
     schema_context = state.get("schema_context")
     if schema_context:
         parts.insert(0, (
@@ -331,17 +340,14 @@ def _build_context(state: AgentState) -> str:
             + schema_context
         ))
 
-    # ── Memory context (Layer 3 rules + Layer 2 episodes) ─────────────────
     memory_context = state.get("memory_context")
     if memory_context:
         parts.insert(4, f"MEMORY CONTEXT:\n{memory_context}")
 
-    # ── Obsidian corrections and vault notes ───────────────────────────────
     obsidian_context = state.get("obsidian_context")
     if obsidian_context:
         parts.insert(5, f"OBSIDIAN VAULT CONTEXT:\n{obsidian_context}")
 
-    # ── Bayesian suggestion ────────────────────────────────────────────────
     bayesian_suggestion = state.get("bayesian_suggestion")
     if bayesian_suggestion and config.BAYESIAN_SELECTOR_ENABLED:
         parts.append(bayesian_suggestion)
