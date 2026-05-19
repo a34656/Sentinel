@@ -3,14 +3,16 @@
 import { useState, useRef } from 'react'
 import { Send, RotateCcw, ExternalLink, CheckCircle2 } from 'lucide-react'
 import { useAgentStore } from '@/stores/agentStore'
-import { AgentFeed }       from '@/components/AgentFeed'
-import { BayesianPanel }   from '@/components/BayesianPanel'
-import { ConfidenceMeter } from '@/components/ConfidenceMeter'
-import { UEBAPanel }       from '@/components/UEBAPanel'
-import { KillSwitch }      from '@/components/KillSwitch'
-import { IncidentHistory } from '@/components/IncidentHistory'
-import { DemoPrompts }     from '@/components/DemoPrompts'
-import { BackendStatus }   from '@/components/BackendStatus'
+import { AgentFeed }          from '@/components/AgentFeed'
+import { BayesianPanel }      from '@/components/BayesianPanel'
+import { ConfidenceMeter }    from '@/components/ConfidenceMeter'
+import { UEBAPanel }          from '@/components/UEBAPanel'
+import { KillSwitch }         from '@/components/KillSwitch'
+import { IncidentHistory }    from '@/components/IncidentHistory'
+import { DemoPrompts }        from '@/components/DemoPrompts'
+import { BackendStatus }      from '@/components/BackendStatus'
+import { InvestigationPlan }  from '@/components/InvestigationPlan'
+import { ComplianceFindings } from '@/components/ComplianceFindings'
 
 // ── Status dot ────────────────────────────────────────────────────────────────
 function StatusDot() {
@@ -65,6 +67,7 @@ function PromptBox() {
   const submit = () => {
     const t = value.trim()
     if (!t || isRunning) return
+    ;(window as unknown as Record<string, string>).__genesisPrompt = t
     start(t)
     setValue('')
   }
@@ -230,7 +233,7 @@ export default function DashboardPage() {
           </div>
         </aside>
 
-        {/* CENTER — Feed + UEBA + Result */}
+        {/* CENTER — Feed + UEBA + Result + Plan/Findings + History */}
         <main className="flex-1 flex flex-col overflow-hidden min-w-0">
           {/* UEBA alert — floats at top when active */}
           <div className="px-4 pt-4 empty:hidden">
@@ -245,6 +248,12 @@ export default function DashboardPage() {
           {/* Live feed — fills space */}
           <div className="flex-1 overflow-hidden p-4 pt-3">
             <AgentFeed />
+          </div>
+
+          {/* Investigation Plan + Compliance Findings — two columns */}
+          <div className="grid grid-cols-2 gap-3 px-4 pb-3 shrink-0" style={{ height: '240px' }}>
+            <InvestigationPlan />
+            <ComplianceFindings />
           </div>
 
           {/* History — bottom */}
