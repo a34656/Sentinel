@@ -263,7 +263,7 @@ for name in sorted(db.list_collection_names()):
         tracer_provider.force_flush()
     except Exception:
         pass
-    
+
     return {
         **state,
         "current_worker": "master",
@@ -351,5 +351,9 @@ def _build_context(state: AgentState) -> str:
     bayesian_suggestion = state.get("bayesian_suggestion")
     if bayesian_suggestion and config.BAYESIAN_SELECTOR_ENABLED:
         parts.append(bayesian_suggestion)
+    
+    phoenix_context = state.get("phoenix_context")
+    if phoenix_context:
+        parts.insert(6, f"PHOENIX TRACE CONTEXT (learn from past failures):\n{phoenix_context}")
 
     return "\n\n".join(parts)

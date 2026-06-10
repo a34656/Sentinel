@@ -144,10 +144,11 @@ async def start_incident(req: IncidentRequest):
 
                 for node_name, state_update in step.items():
                     # Track final values as they arrive
-                    if state_update.get("root_cause"):
-                        final["root_cause"] = state_update["root_cause"]
-                    if state_update.get("notion_page_url"):
-                        final["notion_page_url"] = state_update["notion_page_url"]
+                    if state_update.get("graph_data"):
+                        yield _sse("graph_data", {
+                            "incident_id": incident_id,
+                            **state_update["graph_data"],
+                        })
 
                     event = {
                         "node":                    node_name,
