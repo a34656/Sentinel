@@ -70,8 +70,12 @@ class AgentState(TypedDict):
     # ── Obsidian context (human corrections + relevant vault notes) ────────
     obsidian_context: Optional[str]
 
+    # ── Phoenix trace context (what failed in similar past investigations) ──
+    phoenix_context: Optional[str]          
+    
     # ── Discovered database schema (populated after first schema inspection) ──
     # Plain-text summary of collection names, field names, and sample values.
     # Injected at the TOP of every subsequent Master context so the LLM always
     # uses real field names instead of guessing from the prompt.
     schema_context: Optional[str]
+    graph_data: Optional[dict] 

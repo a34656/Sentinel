@@ -7,6 +7,7 @@ Hardcoded connection — paste your actual URI and DB name below.
 Usage:
     python scripts/quick_inject.py
 """
+
 import os
 import sys
 import random
@@ -24,6 +25,7 @@ random.seed(99)
 # ── PASTE YOUR VALUES HERE ─────────────────────────────────────────────────────
 MONGODB_URI = os.getenv("MONGODB_URI")
 MONGODB_DB  = os.getenv("MONGODB_DB", "Cluster0")
+# ──────────────────────────────────────────────────────────────────────────────
 
 print("Connecting...")
 client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
@@ -79,26 +81,39 @@ for txn_id in f3_ids:
 print(f"F3 inactive_approver   : {col.count_documents({'_anomaly': 'inactive_approver'})}")
 
 # ── Finding 4: Role violations ─────────────────────────────────────────────────
-high_risk_ids = [c["customer_id"] for c in db["customers"].find({"risk_level": "high"})]
-analyst_ids   = [e["emp_id"] for e in db["employees"].find({"role": "analyst", "active": True})]
-f4_ids = [
-    d["txn_id"] for d in col.find(
-        {"customer_id": {"$in": high_risk_ids}, "_anomaly": {"$exists": False}}
-    ).limit(31)
-]
+# CRITICAL FIX: force customer_id to actual high-risk customers
+# so the cross-collection compliance query finds them correctly
+high_risk_ids = [c["customer_id"] for c in
+                 db["customers"].find({"risk_level": "high"}, {"customer_id": 1})]
+analyst_ids   = [e["emp_id"] for e in
+                 db["employees"].find({"role": "analyst", "active": True}, {"emp_id": 1})]
+
+print(f"  High-risk customers available : {len(high_risk_ids)}")
+print(f"  Active analysts available     : {analyst_ids}")
+
+# Use pool[88:119] — doesn't overlap with F1/F2/F3
+f4_ids = pool[88:119]
 for txn_id in f4_ids:
     col.update_one(
         {"txn_id": txn_id},
         {"$set": {
-            "approved_by": random.choice(analyst_ids) if analyst_ids else "EMP0001",
+            "customer_id": random.choice(high_risk_ids),  # force high-risk customer
+            "approved_by": random.choice(analyst_ids),    # force analyst approver
             "status":      "approved",
             "_anomaly":    "role_violation",
         }}
     )
 print(f"F4 role_violation      : {col.count_documents({'_anomaly': 'role_violation'})}")
 
+# Verify cross-collection query Genesis will use
+verify_f4 = db["transactions"].count_documents({
+    "customer_id": {"$in": high_risk_ids},
+    "approved_by": {"$in": analyst_ids},
+})
+print(f"  Cross-collection verify: {verify_f4} (should match F4)")
+
 # ── Finding 5: Missing audit trail ────────────────────────────────────────────
-f5_ids = pool[100:129]
+f5_ids = pool[119:148]
 for txn_id in f5_ids:
     col.update_one(
         {"txn_id": txn_id},

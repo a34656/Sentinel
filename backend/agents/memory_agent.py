@@ -78,6 +78,13 @@ def lookup(state: AgentState) -> AgentState:
     except Exception as exc:
         logger.debug(f"[Memory] Obsidian unavailable: {exc}")
 
+    # ── Phoenix trace context ─────────────────────────────────────────────
+    phoenix_context = ""
+    try:
+        phoenix_context = _query_phoenix_traces(state["incident_prompt"])
+    except Exception as exc:
+        logger.debug(f"[Memory] Phoenix unavailable: {exc}")
+
     # ── Legacy flat lookup (keep for backwards compatibility) ────────────
     client = _get_client()
     prior = []
@@ -99,6 +106,8 @@ def lookup(state: AgentState) -> AgentState:
         parts.append(f"Three-tier memory: {memory_context[:200]}...")
     if obsidian_context:
         parts.append(f"Obsidian: {len(obsidian_context)} chars loaded")
+    if phoenix_context:
+        parts.append(f"Phoenix traces: {len(phoenix_context)} chars loaded")
     if prior:
         parts.append(f"Legacy episodes: {len(prior)}")
     log_entry = f"[Memory] Context loaded — {' | '.join(parts) or 'nothing found'}"
@@ -109,9 +118,9 @@ def lookup(state: AgentState) -> AgentState:
         "prior_incidents": prior,
         "memory_context": memory_context,
         "obsidian_context": obsidian_context,
+        "phoenix_context": phoenix_context,
         "current_worker": "memory_agent",
         "step_log": [log_entry],
-        # Initialise Bayesian fields
         "bayesian_beliefs": {},
         "bayesian_entropy": 0.0,
         "bayesian_top_cause": None,
@@ -187,3 +196,83 @@ def store(state: AgentState) -> AgentState:
         **state,
         "step_log": [log_entry],
     }
+
+
+# ── Phoenix trace query ───────────────────────────────────────────────────────
+
+def _query_phoenix_traces(incident_prompt: str) -> str:
+    """
+    Query Phoenix for recent failed investigation spans similar to this prompt.
+    Uses the Phoenix HTTP API directly — no MCP client needed.
+    Phoenix must be running locally: phoenix serve (default port 6006)
+    """
+    import httpx
+
+    PHOENIX_URL = os.getenv("PHOENIX_URL", "http://localhost:6006")
+    project = os.getenv("ARIZE_PROJECT_NAME", "genesis-compliance")
+
+    try:
+        # Query spans from the last 24 hours that had errors or low confidence
+        response = httpx.post(
+            f"{PHOENIX_URL}/v1/spans",
+            json={
+                "project_name": project,
+                "filter_condition": "span_kind == 'CHAIN'",
+                "limit": 10,
+                "sort": {"col": {"name": "startTime"}, "dir": "desc"},
+            },
+            timeout=5.0,
+        )
+
+        if response.status_code != 200:
+            logger.debug(f"[Memory] Phoenix returned {response.status_code}")
+            return ""
+
+        data = response.json()
+        spans = data.get("data", [])
+
+        if not spans:
+            return ""
+
+        # Extract what's useful for the Master: worker steps that failed,
+        # and what the Master reasoned about similar incidents
+        useful = []
+        for span in spans[:5]:
+            attrs = span.get("attributes", {})
+            status = span.get("status", {})
+            name = span.get("name", "")
+
+            # Only care about failed or low-confidence spans
+            if status.get("statusCode") == "ERROR":
+                useful.append(
+                    f"PAST FAILURE — {name}: {status.get('message', 'unknown error')[:200]}"
+                )
+
+            # Extract LLM input/output for master reasoning spans
+            input_val = attrs.get("input.value", "")
+            output_val = attrs.get("output.value", "")
+            if "master" in name.lower() and output_val:
+                try:
+                    out = json.loads(output_val) if isinstance(output_val, str) else output_val
+                    reasoning = out.get("reasoning", "")
+                    root_cause = out.get("root_cause", "")
+                    confidence = out.get("confidence_score", 0)
+                    if reasoning:
+                        useful.append(
+                            f"PAST REASONING (confidence {confidence:.2f}): "
+                            f"Root cause: {root_cause} | Reasoning: {reasoning[:300]}"
+                        )
+                except Exception:
+                    pass
+
+        if not useful:
+            return ""
+
+        return (
+            "PHOENIX TRACE CONTEXT — What Genesis did in recent similar investigations:\n"
+            + "\n".join(useful)
+        )
+
+    except Exception as exc:
+        logger.debug(f"[Memory] Phoenix query failed: {exc}")
+        return ""

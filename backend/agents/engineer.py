@@ -74,14 +74,26 @@ def execute(state: AgentState) -> AgentState:
         + (f" | Error: {result['stderr'][:200]}" if not result["success"] else "")
     )
     logger.info(log_entry)
- 
+    
+    graph_data_json = None
+    for line in result["output"].split("\n"):
+        if "GENESIS_GRAPH_DATA:" in line:
+            try:
+                import json as _json
+                raw = line[line.index("GENESIS_GRAPH_DATA:") + len("GENESIS_GRAPH_DATA:"):]
+                graph_data_json = _json.loads(raw)
+            except Exception as e:
+                logger.warning(f"[Engineer] Graph data parse error: {e}")
+            break
+        
     return {
         **state,
         "current_worker": "engineer",
         "scripts_executed": scripts_executed,
         "step_log": [log_entry],
-        # Increment retry_count only on failure so Master knows how many attempts remain
         "retry_count": state.get("retry_count", 0) + (0 if result["success"] else 1),
+        # Store graph data if found — server.py picks this up
+        **({"graph_data": graph_data_json} if graph_data_json else {}),
     }
 
 def _inject_mongodb_header(script: str) -> str:
