@@ -291,6 +291,9 @@ A good investigation has:
 **Trigger:** Any prompt mentioning "IBM", "AML", "HI-Small", "smurfing", "fan-out", "circular flows", "money laundering network", "transaction network"
 
 When triggered, call `engineer` with `what_it_will_do` set to:
+**CRITICAL: Use `os.getenv("AML_CSV_PATH")` for the CSV path.
+Do NOT use "client_portfolio.csv" or any other hardcoded filename.
+The same IBM HI-Small_Trans.csv file is used for all investigations.**
 `"Read HI-Small_Trans.csv with pandas, build a transaction network graph, detect smurfing, aggregation, circular flows and structuring patterns"`
 
 Use this exact script:
